@@ -1,0 +1,104 @@
+# Builds ath9k_htc.ko (+ deps) for Xiaomi Mi 9T / Redmi K20 (davinci),
+# LineageOS 23.2 nightly (Android 16), kernel 4.14.357-openela-perf.
+name: Build ath9k_htc modules (davinci)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  KERNEL_REPO: LineageOS/android_kernel_xiaomi_sm6150
+  KERNEL_COMMIT: e03e5ba22586
+  KERNEL_BRANCH: lineage-23.2
+  KERNEL_DEFCONFIG: vendor/sdmsteppe-perf_defconfig
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Clone pinned kernel sources
+        run: |
+          set -e
+          git clone --depth 1 --branch "${KERNEL_BRANCH}" "https://github.com/${KERNEL_REPO}.git" kernel
+          cd kernel
+          SHA=$(git rev-parse --short=12 HEAD)
+          echo "kernel HEAD: ${SHA} (expected ${KERNEL_COMMIT})"
+          if [ "${SHA}" != "${KERNEL_COMMIT}" ]; then
+            echo "::error::${KERNEL_BRANCH} HEAD moved: ${SHA} != ${KERNEL_COMMIT}"
+            exit 1
+          fi
+          # localversion must reproduce ROM vermagic: 4.14.357-openela-perf
+          grep -E "^(SUBLEVEL|EXTRAVERSION)" Makefile
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libncurses-dev \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Download Android clang 21.0.0 (r563880c)
+        run: |
+          set -euxo pipefail
+          mkdir -p toolchain toolchain-extract
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/tags/android-16.0.0_r4/clang-r563880c?format=tar.gz"
+          if wget -q "${URL}" -O clang.tar.gz && tar -tzf clang.tar.gz > /dev/null 2>&1; then
+            tar -xzf clang.tar.gz -C toolchain-extract
+            BINDIR=$(find toolchain-extract -type f -path '*/bin/clang' | head -n1)
+            test -n "${BINDIR}"
+            mv "$(dirname "$(dirname "${BINDIR}")")" toolchain/root
+          else
+            echo "gitiles archive failed, falling back to GitHub mirror"
+            rm -rf toolchain toolchain-extract clang.tar.gz
+            git clone --depth 1 https://github.com/realahnet/clang-r563880c toolchain
+          fi
+          rm -rf toolchain-extract clang.tar.gz
+          ./toolchain/bin/clang --version | head -n 2
+          ./toolchain/bin/clang --version | grep -q "clang version 21.0.0"
+          ./toolchain/bin/clang --version | grep -q "r563880c"
+
+      - name: Configure kernel (base + davinci + ath9k fragments)
+        run: |
+          cd kernel
+          make O=out ARCH=arm64 "${KERNEL_DEFCONFIG}"
+          bash scripts/kconfig/merge_config.sh -m -O out out/.config \
+            arch/arm64/configs/vendor/davinci.config \
+            "${GITHUB_WORKSPACE}/ath9k_htc.config"
+          make O=out ARCH=arm64 olddefconfig
+          echo "--- resolved config ---"
+          grep -E "^CONFIG_(MODULES|MODVERSIONS|MODULE_UNLOAD|WLAN|CFG80211|MAC80211|ATH9K_HTC|ATH9K_COMMON|ATH9K_HW|ATH_COMMON|USB)=" out/.config || true
+
+      - name: Build modules
+        run: |
+          cd kernel
+          export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
+          make -j"$(nproc)" O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            modules
+          mkdir -p "${GITHUB_WORKSPACE}/modules_out"
+          find out -name '*.ko' | xargs -I{} cp -v {} "${GITHUB_WORKSPACE}/modules_out/"
+          echo "--- vermagic ---"
+          for k in "${GITHUB_WORKSPACE}"/modules_out/*.ko; do
+            echo "== $(basename "$k")"
+            strings "$k" | grep -m1 vermagic || true
+          done
+          echo "EXPECTED: 4.14.357-openela-perf-ge03e5ba22586 SMP preempt mod_unload modversions aarch64"
+
+      - name: Copy build info
+        run: |
+          cp kernel/out/.config modules_out/kernel.config
+          cp kernel/out/Module.symvers modules_out/Module.symvers 2>/dev/null || true
+
+      - name: Upload modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: davinci-ath9k-htc-modules
+          path: |
+            modules_out/*.ko
+            modules_out/kernel.config
+            modules_out/Module.symvers
+          if-no-files-found: error
