@@ -40,6 +40,11 @@ jobs:
           set -e
           cd kernel
           git apply -v ../0001-ath9k_htc-no-skb-double-free-on-wmi-timeout.patch
+          # The applied patch makes the git tree "dirty"; setlocalversion would
+          # then append a '-dirty' suffix to vermagic and insmod would reject
+          # the module. Writing .scmversion short-circuits scm_version() and
+          # pins the exact suffix used by the ROM build.
+          printf -- '-g%s' "${KERNEL_COMMIT}" > .scmversion
           echo "--- patched source check (kfree_skb must be gone from timeout branches) ---"
           grep -n "kfree_skb" drivers/net/wireless/ath/ath9k/wmi.c drivers/net/wireless/ath/ath9k/htc_hst.c || true
           git diff --stat
@@ -96,7 +101,11 @@ jobs:
           echo "--- vermagic ---"
           for k in "${GITHUB_WORKSPACE}"/modules_out/*.ko; do
             echo "== $(basename "$k")"
-            strings "$k" | grep -m1 vermagic || true
+            V=$(strings "$k" | grep -m1 vermagic || true)
+            echo "$V"
+            case "$V" in
+              *-dirty*) echo "::error::vermagic has -dirty suffix: $V"; exit 1 ;;
+            esac
           done
           echo "EXPECTED: 4.14.357-openela-perf-ge03e5ba22586 SMP preempt mod_unload modversions aarch64"
 
