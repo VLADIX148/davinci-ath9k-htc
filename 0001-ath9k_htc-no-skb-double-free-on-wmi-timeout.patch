@@ -1,0 +1,36 @@
+--- a/drivers/net/wireless/ath/ath9k/wmi.c
++++ b/drivers/net/wireless/ath/ath9k/wmi.c
+@@ -348,7 +348,12 @@
+ 		wmi->last_seq_id = 0;
+ 		spin_unlock_irqrestore(&wmi->wmi_lock, flags);
+ 		mutex_unlock(&wmi->op_mutex);
+-		kfree_skb(skb);
++		/*
++		 * The skb was handed over to the USB TX stack by htc_send_epid()
++		 * and is freed by its completion path (or purged when the target
++		 * disconnects). Freeing it here on a timeout is a double free that
++		 * panics the kernel with flaky adapters. Just report the timeout.
++		 */
+ 		return -ETIMEDOUT;
+ 	}
+ 
+--- a/drivers/net/wireless/ath/ath9k/htc_hst.c
++++ b/drivers/net/wireless/ath/ath9k/htc_hst.c
+@@ -180,7 +180,7 @@
+ 	time_left = wait_for_completion_timeout(&target->cmd_wait, HZ);
+ 	if (!time_left) {
+ 		dev_err(target->dev, "HTC credit config timeout\n");
+-		kfree_skb(skb);
++		/* skb ownership was transferred to the USB TX stack */
+ 		return -ETIMEDOUT;
+ 	}
+ 
+@@ -216,7 +216,7 @@
+ 	time_left = wait_for_completion_timeout(&target->cmd_wait, HZ);
+ 	if (!time_left) {
+ 		dev_err(target->dev, "HTC start timeout\n");
+-		kfree_skb(skb);
++		/* skb ownership was transferred to the USB TX stack */
+ 		return -ETIMEDOUT;
+ 	}
+ 

@@ -35,6 +35,15 @@ jobs:
           # localversion must reproduce ROM vermagic: 4.14.357-openela-perf
           grep -E "^(SUBLEVEL|EXTRAVERSION)" Makefile
 
+      - name: Apply no-reboot stability patch (skb double-free on WMI/HTC timeout)
+        run: |
+          set -e
+          cd kernel
+          git apply -v ../0001-ath9k_htc-no-skb-double-free-on-wmi-timeout.patch
+          echo "--- patched source check (kfree_skb must be gone from timeout branches) ---"
+          grep -n "kfree_skb" drivers/net/wireless/ath/ath9k/wmi.c drivers/net/wireless/ath/ath9k/htc_hst.c || true
+          git diff --stat
+
       - name: Install host dependencies
         run: |
           sudo apt-get update
